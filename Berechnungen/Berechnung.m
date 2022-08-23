@@ -21,7 +21,7 @@ close all
 filepath.dir='V:\DDE\Exchange\Kundendienst_Bandende\Praktikant\PCAA\Bachelorarbeit_MatlabSimulink\Test_Files\';
 filepath.filename='V350243_02061-02087_2022_KW8';
 filepath.fullpath=append(filepath.dir,filepath.filename,'.mat');
-stepsize=1;
+
 
 %% Messsignale laden
 
@@ -36,9 +36,9 @@ EnvP_p=struct2array(load(filepath.fullpath,'EnvP_p'));  %[hpa]
 EnvT_t=struct2array(load(filepath.fullpath,'EnvT_t'));  %[°C]
 
 %% Messignale Zeitlichsynchronisieren und überschreiben
-
+dt=1;
 sim("Messwerte_Sync.slx");
-clearvars -except filepath ans
+clearvars -except filepath ans dt
 
 dm_abgas=ans.ASMod_dmEGFld_3/3600;%[kg/s]
 v_vehicle=ans.VehV_v; %[km/h]
@@ -61,6 +61,9 @@ mat_cons.waermekapazitaet_wasser_fluessig = 4200;    % [J/kgK]
 mat_cons.waermekapazitaet_luft = 1005;               % [J/kgK]
 
 lambda_st=14.7;
+WuezRohr_Dynamikfaktor=2;
+m_KonWasser=[0 0 0 0];
+
 
 % Rohr nach SCR
 Rohr.AnzahlZonen = 4;                                          % [-]       Anzahl der Rohrsegmente für 1D-Diskretisierung
@@ -84,9 +87,13 @@ Rohr.Dicke=0.005;                                           %[m]
 % Simulationslänge
 simlength=length(t);
 
-% Krafstoffmassenstrom
-dm_diesel=dm_abgas./lambda./lambda_st; %[kg/s] Gesamteinspritzmenge pro Sekunde
+% Krafstoffmassenstrom, Wasserentsthehung und spez.Feucht
+dm_diesel=dm_abgas./lambda/lambda_st; %[kg/s] Gesamteinspritzmenge pro Sekunde
+dm_diesel(isnan(dm_diesel))=0;
 dm_wasser=dm_diesel.*1.05; %[kg/s] Wasserentstehung durch Verbrennung
+spez_feuchte=dm_wasser./dm_abgas; %[kg/kg]
+spez_feuchte(isnan(spez_feuchte))=0;
+
 
 % Erstellung Dampfsättigungskurve
 Kennlinien.temp_gas=[-20 -15 -10 -5 0 5 10 15 20 25 30 35 40 50 60 70 80 90 100]; %Temperatur der Luft/Abgases in °C
@@ -118,17 +125,25 @@ T_Wand=[T_umg(2,1) T_umg(2,1) T_umg(2,1) T_umg(2,1)];
 for x=2:simlength
     for i=1:Rohr.AnzahlZonen
         if i==1
-            Q_waermeleitung(x,i)=Rohr.LambdaRohr*Rohr.StroemungsdurchmesserEff*Rohr.Laenge_Abschnitt*(T_abgas_nscr(x)-T_Wand(x-1,i));
+            Q_waermeleitung(x,i)=Rohr.LambdaRohr*Rohr.StroemungsdurchmesserEff*Rohr.Laenge_Abschnitt*(T_abgas_nscr(x-1,i)-T_Wand(x-1,i)); %[W]
         else
-            Q_waermeleitung(x,i)=Rohr.LambdaRohr*Rohr.StroemungsdurchmesserEff*Rohr.Laenge_Abschnitt*(T_Wand(x-1,i)-T_Wand(x-1,i));
+            Q_waermeleitung(x,i)=Rohr.LambdaRohr*Rohr.StroemungsdurchmesserEff*Rohr.Laenge_Abschnitt*(T_Wand(x-1,i)-T_Wand(x-1,i)); %[W]
         end
-        Q_gas_wand(i,x)=1;
-        Q_wand_umg(i,x)=1;
-        Q_kond(i,x)=1;
+        Q_gas_wand(x,i)=(T_Wand(x-1,i)-T_abgas_nscr(x-1,i))*alpha_gas_wand(x,1)*Rohr.Mantelflaeche_innen*WuezRohr_Dynamikfaktor; %[W]
 
+        Q_wand_umg(x,i)= Rohr.thermWidRohr/Rohr.Mantelflaeche_aussen/(T_Wand(x-1,i)-T_umg(x-1));
+        
+        T_abgas_nscr(x-1,i+1)=T_abgas_nscr(x-1,i)-(Q_gas_wand(x,i)/(spez_feuchte(x)*mat_cons.waermekapazitaet_wasser_gasfoermig*dm_abgas(x-1)*dt+mat_cons.waermekapazitaet_luft*dm_abgas(x-1)*dt));
+        
+        m_KonWasser(x,i)=m_KonWasser(x-1,i)+(dm_wasser(x,i)-polyval(Kennlinien.saettigungskurve,T_abgas_nscr(x-1,i+1))*dm_abgas(x-1)*dt);
+        m_KonWasser(isnan(m_KonWasser))=0;
+        dm_wasser(x,i+1)=dm_wasser(x,i)-m_KonWasser(x,i)/(dm_abgas(x-1)*dt);
     end
 end
 
+
+%Q_kond(x,i)=
+%       Q_verdunst
 
 
 %% Testereien
