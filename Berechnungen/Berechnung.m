@@ -1,7 +1,7 @@
 %% TODO:
-% Wärmeenergiebilanzen aufstellen
+% 
 %
-%dm wasser????
+%delta zwischen q's in sim von franz und diesem file
 %
 %
 %
@@ -20,7 +20,7 @@ close all
 %% Initalbedingungen
 
 filepath.dir='V:\DDE\Exchange\Kundendienst_Bandende\Praktikant\PCAA\Bachelorarbeit_MatlabSimulink\Test_Files\';
-filepath.filename='V350243_02061-02087_2022_KW8';
+filepath.filename='V350243_02061-02087_2022_KW8_RESET';
 filepath.fullpath=append(filepath.dir,filepath.filename,'.mat');
 
 
@@ -35,11 +35,14 @@ UCatDsT_t=struct2array(load(filepath.fullpath,'T_nSCR'));   %[°C]
 SCR_tUCatUsT=struct2array(load(filepath.fullpath,'SCR_tUCatUsT'));  %[°C]
 EnvP_p=struct2array(load(filepath.fullpath,'EnvP_p'));  %[hpa]
 EnvT_t=struct2array(load(filepath.fullpath,'EnvT_t'));  %[°C]
+reset(:,2)=struct2array(load(filepath.fullpath,'reset'));
+reset(:,1)=EnvT_t(:,1);
 
 %% Messignale Zeitlichsynchronisieren und überschreiben
-dt=0.0125;
+
+dt=0.02;
 sim("Messwerte_Sync.slx");
-clearvars -except filepath ans dt
+clearvars -except filepath ans dt 
 
 dm_abgas=ans.ASMod_dmEGFld_3(1/dt:end)/3600;%[kg/s]
 v_vehicle=ans.VehV_v(1/dt:end); %[km/h]
@@ -49,7 +52,12 @@ T_abgas_vscr=ans.SCR_tUCatUsT(1/dt:end);  %[°C]
 p_umg=ans.EnvP_p(1/dt:end)*100; %[N/m2]
 T_umg=ans.EnvT_t(1/dt:end); %[°C]
 t=ans.t(1/dt:end); %[s]
+reset=ans.reset(1/dt:end); %[s]
+
 clear ans
+for i=1:length(t)
+T_umg(i,1)=10;
+end
 
 
 %% Materialparameter
@@ -141,11 +149,21 @@ Q_kondensation=0;
 %T_Wand=[10 10 10 10; 10 10 10 10];
 %% Iterative Kondeswassermengenbestimmung
 tic
-
-for x=2:1400/dt
-    if x==700/dt
+t_sim=28000; %Dauer der Sim in s
+Q_waermeleitung(t_sim/dt,4)=0;
+Q_gas_wand(t_sim/dt,4)=0;
+Q_wand_umg(t_sim/dt,4)=0;
+m_KonWasser(t_sim/dt,4)=0;
+m_KonWasserGes(1,t_sim/dt)=0;
+T_Wand(t_sim/dt,4)=0;
+T_Wand(1,1:4)=[T_umg(2,1)-0.001 T_umg(2,1)-0.001 T_umg(2,1)-0.001 T_umg(2,1)-0.001];
+for x=2:t_sim/dt
+    %1400/dt
+    if  x==364
         disp('test')
     end
+        if reset(x)~=1
+
     for i=1:Rohr.AnzahlZonen
         if i==1
             Q_waermeleitung(x,i)=Rohr.LambdaRohr*Rohr.Querschnitt/Rohr.Laenge_Abschnitt*(T_abgas_nscr(x-1,i)-T_Wand(x-1,i)); %[W]
@@ -177,6 +195,7 @@ for x=2:1400/dt
             T_abgas_nscr(x-1,i+1)=T_abgas_nscr(x-1,i);
             m_KonWasser(x,i)=m_KonWasser(x-1,i);
             dm_wasser(x,i+1)=dm_wasser(x,i);
+          
         end
 
 
@@ -185,6 +204,16 @@ for x=2:1400/dt
         T_Wand(x,i)=T_Wand(x-1,i)+(Q_kondensation+Q_waermeleitung(x,i)+Q_gas_wand(x,i)-Q_wand_umg(x,i))*dt/mat_cons.c_edelstahl/Rohr.MasseRohr;
     end
     m_KonWasserGes(x)=sum((m_KonWasser(x,1:4)));
+    else
+        T_Wand(x,1:4)=T_umg(x,1);
+        m_KonWasserGes(x)=m_KonWasserGes(x-1);
+        m_KonWasser(x,1)=m_KonWasser(x-1,1);
+        m_KonWasser(x,2)=m_KonWasser(x-1,2);
+        m_KonWasser(x,3)=m_KonWasser(x-1,3);
+        m_KonWasser(x,4)=m_KonWasser(x-1,4);
+        T_abgas_nscr(x-1,2:5)=T_abgas_nscr(x-1,1);
+        
+    end
 end
 toc
 %Q_waermeleitung(x,i)+
@@ -218,6 +247,7 @@ figure
 plot(t(1:x),T_Wand(1:x,:))
 hold on
 legend('T_Wand')
+figure
 plot(t(1:x),T_abgas_nscr(1:x,:))
 grid on
 legend('T_abgas')
