@@ -1,6 +1,7 @@
 %% TODO:
 % Wärmeenergiebilanzen aufstellen
 %
+%dm wasser????
 %
 %
 %
@@ -9,7 +10,7 @@
 %
 %
 %
-%
+%%
 
 %%
 clc
@@ -36,31 +37,21 @@ EnvP_p=struct2array(load(filepath.fullpath,'EnvP_p'));  %[hpa]
 EnvT_t=struct2array(load(filepath.fullpath,'EnvT_t'));  %[°C]
 
 %% Messignale Zeitlichsynchronisieren und überschreiben
-dt=0.001;
+dt=0.0125;
 sim("Messwerte_Sync.slx");
 clearvars -except filepath ans dt
 
-dm_abgas=ans.ASMod_dmEGFld_3/3600;%[kg/s]
-v_vehicle=ans.VehV_v; %[km/h]
-lambda=ans.EGSSig_ratLamEngineDs; %[-]
-T_abgas_nscr(:,1)=ans.UCatDsT_t;   %[°C]
-T_abgas_vscr=ans.SCR_tUCatUsT;  %[°C]
-p_umg=ans.EnvP_p*100; %[N/m2]
-T_umg=ans.EnvT_t; %[°C]
-t=ans.t; %[s]
+dm_abgas=ans.ASMod_dmEGFld_3(1/dt:end)/3600;%[kg/s]
+v_vehicle=ans.VehV_v(1/dt:end); %[km/h]
+lambda=ans.EGSSig_ratLamEngineDs(1/dt:end); %[-]
+T_abgas_nscr(:,1)=ans.UCatDsT_t(1/dt:end);   %[°C]
+T_abgas_vscr=ans.SCR_tUCatUsT(1/dt:end);  %[°C]
+p_umg=ans.EnvP_p(1/dt:end)*100; %[N/m2]
+T_umg=ans.EnvT_t(1/dt:end); %[°C]
+t=ans.t(1/dt:end); %[s]
 clear ans
-i=1;
-while dm_abgas(i)==0
-    dm_abgas(i)=[];
-    lambda(i)=[];
-    p_umg(i)=[];
-    t(i)=[];
-    T_abgas_nscr(i)=[];
-    T_abgas_vscr(i)=[];
-    T_umg(i)=[];
-    v_vehicle(i)=[];
-end
-dm_abgas=dm_abgas+0.000001;
+
+
 %% Materialparameter
 
 mat_cons.c_edelstahl = 500;                          % [J/kgK]       Wärmekapa. Edelstahl
@@ -105,9 +96,18 @@ dm_diesel=dm_abgas./lambda/lambda_st; %[kg/s] Gesamteinspritzmenge pro Sekunde
 % dm_diesel(isnan(dm_diesel))=0.000001;
 % dm_diesel(isinf(dm_diesel))=0.000001;
 dm_wasser=dm_diesel.*1.05; %[kg/s] Wasserentstehung durch Verbrennung
-spez_feuchte=dm_wasser./dm_abgas; %[kg/kg]
-% spez_feuchte(isnan(spez_feuchte))=0.0001;
-% spez_feuchte(isinf(spez_feuchte))=0.0001;
+for i=1:simlength
+    if dm_abgas(i)~=0
+        spez_feuchte(i)=dm_wasser(i)/dm_abgas(i); %[kg/kg]
+    else
+        spez_feuchte(i)=0;
+    end
+end
+spez_feuchte=spez_feuchte';
+
+%Abgasmassestrom in Abgasvolumenstrom
+
+dv_abgas=dm_abgas.*(T_abgas_nscr+273)*287/100000;
 
 % Erstellung Dampfsättigungskurve
 Kennlinien.temp_gas=[-20 -15 -10 -5 0 5 10 15 20 25 30 35 40 50 60 70 80 90 100]; %Temperatur der Luft/Abgases in °C
@@ -124,49 +124,116 @@ v_abgas=(dm_abgas.*(T_abgas_nscr+273.15)./p_umg)*mat_cons.R_sLuft/Rohr.Querschni
 
 % Thermische Größen
 alpha_gas_wand=(4.13 + 0.23*T_abgas_nscr./100 - 0.0077*(T_abgas_nscr./100).^2).*v_abgas.^0.75/Rohr.StroemungsdurchmesserEff^0.25;%[W/m2K]
-% alpha_gas_wand(isnan(alpha_gas_wand))=0;
+alpha_gas_wand(isnan(alpha_gas_wand))=0;
 alpha_wand_umg=polyval(Kennlinien.alpha_wand_umg,v_vehicle); %[W/m2K]
 rth_wand_umg=1./alpha_wand_umg+Rohr.LambdaRohr; %thermischer Gesamtwiderstand
 
-dm_wasser_max=polyval(Kennlinien.saettigungskurve,T_abgas_nscr).*dm_abgas;%[kg/s]
+dm_wasser_max=polyval(Kennlinien.saettigungskurve,T_abgas_nscr).*dv_abgas;%[kg/s]
 for i=1:simlength
     if dm_wasser_max(i)<dm_wasser(i)
         dm_wasser(i)=dm_wasser_max(i);
     end
 end
-T_Wand=[T_umg(2,1)+0.001 T_umg(2,1)+0.001 T_umg(2,1)+0.001 T_umg(2,1)+0.001];
 
+T_Wand=[T_umg(2,1)-0.001 T_umg(2,1)-0.001 T_umg(2,1)-0.001 T_umg(2,1)-0.001];
+Q_kondensation=0;
+
+%T_Wand=[10 10 10 10; 10 10 10 10];
 %% Iterative Kondeswassermengenbestimmung
 tic
-for x=2:13984
-    if x==8500
-    disp('test')
-    end
 
+for x=2:1400/dt
+    if x==700/dt
+        disp('test')
+    end
     for i=1:Rohr.AnzahlZonen
         if i==1
             Q_waermeleitung(x,i)=Rohr.LambdaRohr*Rohr.Querschnitt/Rohr.Laenge_Abschnitt*(T_abgas_nscr(x-1,i)-T_Wand(x-1,i)); %[W]
         else
             Q_waermeleitung(x,i)=Rohr.LambdaRohr*Rohr.Querschnitt/Rohr.Laenge_Abschnitt*(T_Wand(x-1,i-1)-T_Wand(x-1,i)); %[W]
         end
-        Q_gas_wand(x,i)=(T_abgas_nscr(x-1,i)-T_Wand(x-1,i))*alpha_gas_wand(x-1,1)*Rohr.Mantelflaeche_innen*WuezRohr_Dynamikfaktor; %[W]
+        Q_gas_wand(x,i)=(T_abgas_nscr(x-1,i)-T_Wand(x-1,i))*alpha_gas_wand(x,1)*Rohr.Mantelflaeche_innen*WuezRohr_Dynamikfaktor; %[W]
+        Q_wand_umg(x,i)= Rohr.Mantelflaeche_aussen*(T_Wand(x-1,i)-T_umg(x-1))/(Rohr.thermWidRohr+1/alpha_wand_umg(x));
 
-        Q_wand_umg(x,i)= Rohr.Mantelflaeche_aussen*(T_Wand(x-1,i)-T_umg(x-1)/(Rohr.thermWidRohr+alpha_wand_umg(x-1)));
-  
-        T_abgas_nscr(x-1,i+1)=T_abgas_nscr(x-1,i)-(Q_gas_wand(x-1,i)/(spez_feuchte(x-1)*mat_cons.waermekapazitaet_wasser_gasfoermig*dm_wasser(x-1)*dm_abgas(x-1)*dt+mat_cons.waermekapazitaet_luft*dm_abgas(x-1)*dt));
-        
-        m_KonWasser(x,i)=m_KonWasser(x-1,i)+(dm_wasser(x,i)-polyval(Kennlinien.saettigungskurve,T_abgas_nscr(x-1,i+1))*dm_abgas(x-1)*dt);
-%         m_KonWasser(isnan(m_KonWasser))=0;
-        dm_wasser(x,i+1)=dm_wasser(x,i)-m_KonWasser(x,i)/(dm_abgas(x-1)*dt);
-        T_Wand(x,i)=T_Wand(x-1,i)+(Q_waermeleitung(x,i)+Q_gas_wand(x,i)-Q_wand_umg(x,i))*dm_abgas(x-1)*dt/mat_cons.c_edelstahl;
+
+        if dm_abgas(x-1)~=0
+            T_abgas_nscr(x-1,i+1)=T_abgas_nscr(x-1,i)-(Q_gas_wand(x,i)/((spez_feuchte(x-1)*mat_cons.waermekapazitaet_wasser_gasfoermig+mat_cons.waermekapazitaet_luft)*dm_abgas(x-1))*dt);
+            dm_KonWasser=(dm_wasser(x,i)-polyval(Kennlinien.saettigungskurve,T_Wand(x-1,i))*dv_abgas(x-1))*dt;
+            if dm_KonWasser<0
+                dm_KonWasser=0;
+            end
+
+            m_KonWasser(x,i)=m_KonWasser(x-1,i)+dm_KonWasser;
+
+            if dm_KonWasser>0
+                Q_kondensation=2088*dm_KonWasser*1000;
+            else
+                Q_kondensation=0;
+            end
+
+
+            dm_wasser(x,i+1)=dm_wasser(x,i)-m_KonWasser(x,i);
+        else
+            T_abgas_nscr(x-1,i+1)=T_abgas_nscr(x-1,i);
+            m_KonWasser(x,i)=m_KonWasser(x-1,i);
+            dm_wasser(x,i+1)=dm_wasser(x,i);
+        end
+
+
+
+
+        T_Wand(x,i)=T_Wand(x-1,i)+(Q_kondensation+Q_waermeleitung(x,i)+Q_gas_wand(x,i)-Q_wand_umg(x,i))*dt/mat_cons.c_edelstahl/Rohr.MasseRohr;
     end
-    
+    m_KonWasserGes(x)=sum((m_KonWasser(x,1:4)));
 end
 toc
-
+%Q_waermeleitung(x,i)+
 %Q_kond(x,i)=
 %       Q_verdunst
 
 
 %% Testereien
-plot(t(1:13900),alpha_wand_umg(1:13900,:))
+
+% figure
+% plot(t(1:13900),Q_waermeleitung(1:13900,2))
+% grid on
+% legend('Q_Wärmeleitung')
+% figure
+% plot(t(1:x),T_abgas_nscr(1:x,:))
+% grid on
+% legend('T_abgas')
+figure
+plot(t(1:x),dm_wasser(1:x))
+grid on
+legend('dm_wasser')
+figure
+plot(t(1:x),Q_gas_wand(1:x,:))
+grid on
+legend('Q_gas_wand')
+% figure
+% plot(t(1:x),spez_feuchte(1:x))
+% grid on
+% legend('spez_feuchte')
+figure
+plot(t(1:x),T_Wand(1:x,:))
+hold on
+legend('T_Wand')
+plot(t(1:x),T_abgas_nscr(1:x,:))
+grid on
+legend('T_abgas')
+% figure
+% plot(t(1:x),m_KonWasser(1:x,1:4))
+% grid on
+% legend('m_KonWasser')
+figure
+plot(t(1:x),m_KonWasserGes(1:x))
+grid on
+legend('m_KonWasserGes')
+figure
+plot(t(1:x),Q_wand_umg(1:x,:))
+grid on
+legend('Q_wand_umg')
+figure
+plot(0:100,polyval(Kennlinien.saettigungskurve,(0:100)))
+
+
